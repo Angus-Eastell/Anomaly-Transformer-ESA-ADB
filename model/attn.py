@@ -26,7 +26,9 @@ class AnomalyAttention(nn.Module):
         self.output_attention = output_attention
         self.dropout = nn.Dropout(attention_dropout)
         window_size = win_size
-        self.distances = torch.zeros((window_size, window_size)).cuda()
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.distances = torch.zeros((window_size, window_size), device=device)
+        #self.distances = torch.zeros((window_size, window_size)).cuda()
         for i in range(window_size):
             for j in range(window_size):
                 self.distances[i][j] = abs(i - j)
@@ -48,7 +50,8 @@ class AnomalyAttention(nn.Module):
         sigma = torch.sigmoid(sigma * 5) + 1e-5
         sigma = torch.pow(3, sigma) - 1
         sigma = sigma.unsqueeze(-1).repeat(1, 1, 1, window_size)  # B H L L
-        prior = self.distances.unsqueeze(0).unsqueeze(0).repeat(sigma.shape[0], sigma.shape[1], 1, 1).cuda()
+        prior = (self.distances.unsqueeze(0).unsqueeze(0).repeat(sigma.shape[0], sigma.shape[1], 1, 1).to(self.device))
+        #prior = self.distances.unsqueeze(0).unsqueeze(0).repeat(sigma.shape[0], sigma.shape[1], 1, 1).cuda()
         prior = 1.0 / (math.sqrt(2 * math.pi) * sigma) * torch.exp(-prior ** 2 / 2 / (sigma ** 2))
 
         series = self.dropout(torch.softmax(attn, dim=-1))
