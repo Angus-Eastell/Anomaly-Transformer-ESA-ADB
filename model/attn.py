@@ -27,7 +27,7 @@ class AnomalyAttention(nn.Module):
         self.dropout = nn.Dropout(attention_dropout)
         window_size = win_size
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.distances = torch.zeros((window_size, window_size), device=device)
+        self.distances = torch.zeros((window_size, window_size), device=self.device)
         #self.distances = torch.zeros((window_size, window_size)).cuda()
         for i in range(window_size):
             for j in range(window_size):
