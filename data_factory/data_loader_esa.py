@@ -20,7 +20,7 @@ class ESASegLoader(object):
         self.scaler = StandardScaler()
 
         # training and validation data
-        df = pd.read_csv(data_path + train_length +'.train.csv')
+        df = pd.read_csv(data_path + '/' + train_length +'.train.csv')
 
         # Identify telemetry channels and anomaly labels
         self.all_channels = [col for col in df.columns if col.startswith('channel_')]
@@ -56,7 +56,7 @@ class ESASegLoader(object):
         self.val_labels = self.labels[int(data_len * 0.8):]
 
         # test data
-        test_df = pd.read_csv(data_path + '84_months.test.csv')
+        test_df = pd.read_csv(data_path + '/' + '84_months.test.csv')
 
         test_data = test_df[self.target_channels].values.astype(np.float32)
         self.test_labels = test_df[self.label_columns].values.astype(np.float32)
@@ -117,4 +117,5 @@ if __name__ == "__main__":
     print(len(dataset))
     data, label = dataset[0]
     print(data.shape)
+
     print(label.shape)
