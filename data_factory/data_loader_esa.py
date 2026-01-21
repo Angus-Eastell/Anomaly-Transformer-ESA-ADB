@@ -12,7 +12,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler
 import pickle
 
-class ESASegLoader(object):
+class ESASegLoader(Dataset):
     def __init__(self, data_path, win_size, step, mode="train", target_channels = None, train_length = '3_months'):
         self.mode = mode
         self.step = step
@@ -50,24 +50,26 @@ class ESASegLoader(object):
         # splitting train into train and validation
         data_len = len(data)
 
-        self.train = data[:int(data_len * 0.8)]
+        if self.mode == 'train':
+          self.train = data[:int(data_len * 0.8)]
+          print("train:", self.train.shape)
 
-        self.val = data[int(data_len * 0.8):]
-        self.val_labels = self.labels[int(data_len * 0.8):]
+        if self.mode == 'val':
+          self.val = data[int(data_len * 0.8):]
+          self.val_labels = self.labels[int(data_len * 0.8):]
+          print("val:", self.val.shape)
 
-        # test data
-        test_df = pd.read_csv(data_path + '/' + '84_months.test.csv')
+        if self.mode == 'test':
+          # test data
+          test_df = pd.read_csv(data_path + '/' + '84_months.test.csv')
 
-        test_data = test_df[self.target_channels].values.astype(np.float32)
-        self.test_labels = test_df[self.label_columns].values.astype(np.float32)
+          test_data = test_df[self.target_channels].values.astype(np.float32)
+          self.test_labels = test_df[self.label_columns].values.astype(np.float32)
 
-        test_data = np.nan_to_num(test_data)
+          test_data = np.nan_to_num(test_data)
 
-        self.test = self.scaler.transform(test_data)
-
-        print("test:", self.test.shape)
-        print("val:", self.val.shape)
-        print("train:", self.train.shape)
+          self.test = self.scaler.transform(test_data)
+          print("test:", self.test.shape)
 
     def __len__(self):
         """
@@ -85,9 +87,9 @@ class ESASegLoader(object):
     def __getitem__(self, index):
         index = index * self.step
         if self.mode == "train":
-            return np.float32(self.train[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
+            return np.float32(self.train[index:index + self.win_size]), np.float32(np.zeros(self.win_size))
         elif (self.mode == 'val'):
-            return np.float32(self.val[index:index + self.win_size]), np.float32(self.test_labels[0:self.win_size])
+            return np.float32(self.val[index:index + self.win_size]), np.float32(self.val_labels[0:self.win_size])
             #   np.float32(self.val_labels[index:index + self.win_size])
         elif (self.mode == 'test'):
             return np.float32(self.test[index:index + self.win_size]), np.float32(
@@ -119,3 +121,4 @@ if __name__ == "__main__":
     print(data.shape)
 
     print(label.shape)
+
