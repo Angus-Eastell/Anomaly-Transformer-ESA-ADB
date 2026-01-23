@@ -6,7 +6,8 @@ import os
 import time
 from utils.utils import *
 from model.AnomalyTransformer import AnomalyTransformer
-from data_factory.data_loader_esa import get_loader_segment
+from data_factory.data_loader_esa import get_loader_segment, ESALabelsParser
+from ESA_metrics import ESAScores, ADTQC, ChannelAwareFScore
 
 
 def my_kl_loss(p, q):
@@ -64,24 +65,32 @@ class EarlyStopping:
 
 class Solver(object):
     DEFAULTS = {}
-
     def __init__(self, config):
 
         self.__dict__.update(Solver.DEFAULTS, **config)
 
-        self.train_loader = get_loader_segment(self.data_path, batch_size=self.batch_size, win_size=self.win_size,
+        self.train_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                               batch_size=self.batch_size, win_size=self.win_size,
                                                mode='train',
                                                dataset=self.dataset)
-        self.vali_loader = get_loader_segment(self.data_path, batch_size=self.batch_size, win_size=self.win_size,
-                                              mode='val',
-                                              dataset=self.dataset)
-        self.test_loader = get_loader_segment(self.data_path, batch_size=self.batch_size, win_size=self.win_size,
-                                              mode='test',
-                                              dataset=self.dataset)
-        self.thre_loader = get_loader_segment(self.data_path, batch_size=self.batch_size, win_size=self.win_size,
-                                              mode='thre',
-                                              dataset=self.dataset)
+        self.vali_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                               batch_size=self.batch_size, win_size=self.win_size,
+                                               mode='val',
+                                               dataset=self.dataset)
+        self.test_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                               batch_size=self.batch_size, win_size=self.win_size,
+                                               mode='test',
+                                               dataset=self.dataset)
+        self.thre_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                               batch_size=self.batch_size, win_size=self.win_size,
+                                               mode='thre',
+                                               dataset=self.dataset)
 
+        # Load labels
+        self.labels_parser = ESALabelsParser(self.labels_csv_path)
+
+        # channel names
+        self.channel_names = self.target_channels
         self.build_model()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         self.criterion = nn.MSELoss()
@@ -204,6 +213,119 @@ class Solver(object):
                 break
             adjust_learning_rate(self.optimizer, epoch + 1, self.lr)
 
+    def _compute_esa_metrics(self, predictions, ground_truth, anomaly_scores):
+        """
+        Compute ESA metrics
+        
+        Args:
+            predictions: (n_samples, n_channels) - binary predictions
+            ground_truth: (n_samples, n_channels) - ground truth
+            anomaly_scores: (n_samples, n_channels) - anomaly scores
+        """
+        print("\n" + "="*60)
+        print("ESA ANOMALY DETECTION BENCHMARK METRICS")
+        print("="*60)
+        
+        # Get timestamps
+        timestamps = self.test_loader.dataset.get_timestamps()
+        full_range = (timestamps.iloc[0], timestamps.iloc[-1])
+        
+        
+        
+        # Get ground truth labels in ESA format
+        y_true_df = self.labels_parser.get_labels_dataframe(
+            channel_filter=self.channel_names
+        )
+        
+        start, end = full_range
+
+        # keep only events that overlap the telemetry time range
+        y_true_df = y_true_df[
+            (y_true_df["EndTime"] >= start) &
+            (y_true_df["StartTime"] <= end)
+        ].copy()
+
+        # clip event bounds so all events lie inside full_range (satisfies metric assertions)
+        y_true_df["StartTime"] = y_true_df["StartTime"].clip(lower=start)
+        y_true_df["EndTime"]   = y_true_df["EndTime"].clip(upper=end)
+        print("y_true_df columns:", y_true_df.columns.tolist())
+        print("Filtered labels:", len(y_true_df),
+            "range:", y_true_df["StartTime"].min(), "to", y_true_df["EndTime"].max())
+        
+
+        print(f"\nGround truth events: {len(y_true_df)}")
+        print(f"Unique anomaly IDs: {y_true_df['ID'].nunique()}")
+        print(f"Time range: {full_range[0]} to {full_range[1]}")
+        
+        # Create predictions in ESA format (multi-channel)
+        y_pred_dict = {}
+        for ch_idx, ch_name in enumerate(self.channel_names):
+            y_pred_channel = []
+            for i in range(len(predictions)):
+                y_pred_channel.append([timestamps.iloc[i], int(predictions[i, ch_idx])])
+            y_pred_dict[ch_name] = y_pred_channel
+        
+        # 1. ESA Scores (Event-wise and Affiliation-based)
+        print("\n--- Event-wise and Affiliation-based Scores ---")
+        try:
+            # Use first channel for basic ESA scores
+            esa_metric = ESAScores(
+                betas=self.beta,
+                full_range=full_range
+            )
+            print("Telemetry range:", full_range[0], "to", full_range[1])
+            print("Labels range:", y_true_df["StartTime"].min(), "to", y_true_df["EndTime"].max())
+            # Convert single channel for ESAScores
+            y_pred_first = y_pred_dict[self.channel_names[0]]
+            esa_results = esa_metric.score(y_true_df, y_pred_first)
+            
+            for metric_name, value in esa_results.items():
+                print(f"{metric_name:30s}: {value:8.4f}")
+                
+        except Exception as e:
+            print(f"Error computing ESA scores: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # 2. Channel-Aware F-Score
+        print("\n--- Channel-Aware F-Score ---")
+        try:
+            channel_metric = ChannelAwareFScore(
+                beta=self.beta if isinstance(self.beta, float) else self.beta,
+                full_range=full_range
+                
+            )
+            
+            channel_results = channel_metric.score(y_true_df, y_pred_dict)
+            
+            for metric_name, value in channel_results.items():
+                print(f"{metric_name:30s}: {value:8.4f}")
+                
+        except Exception as e:
+            print(f"Error computing channel-aware metrics: {e}")
+        
+        # 3. ADTQC (Latency metrics)
+        print("\n--- ADTQC Latency Metrics ---")
+        try:
+            adtqc_metric = ADTQC(
+                full_range=full_range
+            )
+            
+            adtqc_results = adtqc_metric.score(y_true_df, y_pred_dict)
+            
+            for metric_name, value in adtqc_results.items():
+                if isinstance(value, float):
+                    print(f"{metric_name:30s}: {value:8.4f}")
+                else:
+                    print(f"{metric_name:30s}: {value}")
+                    
+        except Exception as e:
+            print(f"Error computing ADTQC metrics: {e}")
+        
+        print("="*60 + "\n")
+
+        return esa_results, channel_results, adtqc_results
+
     def test(self):
         self.model.load_state_dict(
             torch.load(
@@ -291,11 +413,11 @@ class Solver(object):
         # (3) evaluation on the test set
         test_labels = []
         attens_energy = []
-        for i, (input_data, labels) in enumerate(self.thre_loader):
+        for i, (input_data, labels) in enumerate(self.test_loader):
             input = input_data.float().to(self.device)
             output, series, prior, _ = self.model(input)
 
-            loss = torch.mean(criterion(input, output), dim=-1)
+            loss = criterion(input, output)
 
             series_loss = 0.0
             prior_loss = 0.0
@@ -318,13 +440,14 @@ class Solver(object):
                         series[u].detach()) * temperature
             metric = torch.softmax((-series_loss - prior_loss), dim=-1)
 
+            metric = metric.unsqueeze(-1)
             cri = metric * loss
             cri = cri.detach().cpu().numpy()
             attens_energy.append(cri)
             test_labels.append(labels)
 
-        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1)
-        test_labels = np.concatenate(test_labels, axis=0).reshape(-1)
+        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1, self.output_c)
+        test_labels = np.concatenate(test_labels, axis=0).reshape(-1, self.output_c)
         test_energy = np.array(attens_energy)
         test_labels = np.array(test_labels)
 
@@ -336,6 +459,7 @@ class Solver(object):
         print("gt:     ", gt.shape)
 
         # detection adjustment: please see this issue for more information https://github.com/thuml/Anomaly-Transformer/issues/14
+        """
         anomaly_state = False
         for i in range(len(gt)):
             if gt[i] == 1 and pred[i] == 1 and not anomaly_state:
@@ -356,20 +480,224 @@ class Solver(object):
                 anomaly_state = False
             if anomaly_state:
                 pred[i] = 1
+        """
 
         pred = np.array(pred)
         gt = np.array(gt)
+        gt = (gt == 2).astype(int)
+
         print("pred: ", pred.shape)
         print("gt:   ", gt.shape)
 
         from sklearn.metrics import precision_recall_fscore_support
         from sklearn.metrics import accuracy_score
-        accuracy = accuracy_score(gt, pred)
-        precision, recall, f_score, support = precision_recall_fscore_support(gt, pred,
+
+        gt_any = gt.any(axis=1)
+        pred_any = pred.any(axis=1)
+
+        accuracy = accuracy_score(gt_any, pred_any)
+
+        precision, recall, f_score, support = precision_recall_fscore_support(gt_any, pred_any,
                                                                               average='binary')
         print(
             "Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
                 accuracy, precision,
                 recall, f_score))
 
-        return accuracy, precision, recall, f_score
+        esa_results, channel_results, adtqc = self._compute_esa_metrics(
+                predictions=pred,
+                ground_truth=gt,
+                anomaly_scores=test_energy
+            )
+
+        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc
+
+      
+    def test_per_channel(self):
+        self.model.load_state_dict(
+            torch.load(
+                os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth')))
+        self.model.eval()
+        temperature = 50
+
+        print("======================TEST MODE======================")
+
+        criterion = nn.MSELoss(reduce=False)
+
+        # (1) stastic on the train set
+        attens_energy = []
+        for i, (input_data, labels) in enumerate(self.train_loader):
+            input = input_data.float().to(self.device)
+            output, series, prior, _ = self.model(input)
+            loss = criterion(input, output)
+            series_loss = 0.0
+            prior_loss = 0.0
+            for u in range(len(prior)):
+                if u == 0:
+                    series_loss = my_kl_loss(series[u], (
+                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                   self.win_size)).detach()) * temperature
+                    prior_loss = my_kl_loss(
+                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                self.win_size)),
+                        series[u].detach()) * temperature
+                else:
+                    series_loss += my_kl_loss(series[u], (
+                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                   self.win_size)).detach()) * temperature
+                    prior_loss += my_kl_loss(
+                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                self.win_size)),
+                        series[u].detach()) * temperature
+
+            metric = torch.softmax((-series_loss - prior_loss), dim=-1)
+            metric = metric.unsqueeze(-1)
+            cri = metric * loss
+            cri = cri.detach().cpu().numpy()
+            attens_energy.append(cri)
+
+        attens_energy = np.concatenate(attens_energy, axis=0)#.reshape(-1)
+        #attends_energy = attens_energy.reshape(-1, attens_energy.shape[-1])
+        train_energy = np.array(attens_energy)
+
+        # (2) find the threshold
+        attens_energy = []
+        for i, (input_data, labels) in enumerate(self.thre_loader):
+            input = input_data.float().to(self.device)
+            output, series, prior, _ = self.model(input)
+
+            loss = criterion(input, output)
+
+            series_loss = 0.0
+            prior_loss = 0.0
+            for u in range(len(prior)):
+                if u == 0:
+                    series_loss = my_kl_loss(series[u], (
+                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                   self.win_size)).detach()) * temperature
+                    prior_loss = my_kl_loss(
+                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                self.win_size)),
+                        series[u].detach()) * temperature
+                else:
+                    series_loss += my_kl_loss(series[u], (
+                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                   self.win_size)).detach()) * temperature
+                    prior_loss += my_kl_loss(
+                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                self.win_size)),
+                        series[u].detach()) * temperature
+            # Metric
+            metric = torch.softmax((-series_loss - prior_loss), dim=-1)
+            metric = metric.unsqueeze(-1)
+            cri = metric * loss
+            cri = cri.detach().cpu().numpy()
+            attens_energy.append(cri)
+  
+        attens_energy = np.concatenate(attens_energy, axis=0)#.reshape(-1)
+        #attends_energy = attens_energy.reshape(-1, attens_energy.shape[-1])
+        test_energy = np.array(attens_energy)
+
+        combined_energy = np.concatenate([train_energy, test_energy], axis=0)
+        print(combined_energy.shape)
+        thresh = np.percentile(combined_energy, 100 - self.anormly_ratio, axis = (0,1))
+        print("Per channel thresholds :", thresh)
+
+        # (3) evaluation on the test set
+        test_labels = []
+        attens_energy = []
+        for i, (input_data, labels) in enumerate(self.thre_loader):
+            input = input_data.float().to(self.device)
+            output, series, prior, _ = self.model(input)
+
+            loss = criterion(input, output)
+
+            series_loss = 0.0
+            prior_loss = 0.0
+            for u in range(len(prior)):
+                if u == 0:
+                    series_loss = my_kl_loss(series[u], (
+                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                   self.win_size)).detach()) * temperature
+                    prior_loss = my_kl_loss(
+                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                self.win_size)),
+                        series[u].detach()) * temperature
+                else:
+                    series_loss += my_kl_loss(series[u], (
+                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                   self.win_size)).detach()) * temperature
+                    prior_loss += my_kl_loss(
+                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
+                                                                                                self.win_size)),
+                        series[u].detach()) * temperature
+            metric = torch.softmax((-series_loss - prior_loss), dim=-1)
+
+            metric = metric.unsqueeze(-1)
+            cri = metric * loss
+            cri = cri.detach().cpu().numpy()
+            attens_energy.append(cri)
+            test_labels.append(labels)
+
+        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1, self.output_c)
+        test_labels = np.concatenate(test_labels, axis=0).reshape(-1, self.output_c)
+        test_energy = np.array(attens_energy)
+        test_labels = np.array(test_labels)
+
+        pred = (test_energy > thresh[None, :]).astype(int)
+
+        gt = test_labels.astype(int)
+
+        print("pred:   ", pred.shape)
+        print("gt:     ", gt.shape)
+
+        # detection adjustment: please see this issue for more information https://github.com/thuml/Anomaly-Transformer/issues/14
+        """
+        anomaly_state = False
+        for i in range(len(gt)):
+            if gt[i] == 1 and pred[i] == 1 and not anomaly_state:
+                anomaly_state = True
+                for j in range(i, 0, -1):
+                    if gt[j] == 0:
+                        break
+                    else:
+                        if pred[j] == 0:
+                            pred[j] = 1
+                for j in range(i, len(gt)):
+                    if gt[j] == 0:
+                        break
+                    else:
+                        if pred[j] == 0:
+                            pred[j] = 1
+            elif gt[i] == 0:
+                anomaly_state = False
+            if anomaly_state:
+                pred[i] = 1
+        """
+
+        pred = np.array(pred)
+        gt = np.array(gt)
+        gt = (gt == 2).astype(int)
+
+        from sklearn.metrics import precision_recall_fscore_support
+        from sklearn.metrics import accuracy_score
+
+        gt_any = gt.any(axis=1)
+        pred_any = pred.any(axis=1)
+
+        accuracy = accuracy_score(gt_any, pred_any)
+
+        precision, recall, f_score, support = precision_recall_fscore_support(gt_any, pred_any,
+                                                                              average='binary')
+        print(
+            "Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
+                accuracy, precision,
+                recall, f_score))
+
+        esa_results, channel_results, adtqc = self._compute_esa_metrics(
+                predictions=pred,
+                ground_truth=gt,
+                anomaly_scores=test_energy
+            )
+
+        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc
