@@ -13,7 +13,7 @@ from sklearn.preprocessing import StandardScaler
 import pickle
 
 class ESASegLoader(Dataset):
-    def __init__(self, data_path, win_size, step, mode="train", target_channels = None, train_length = '3_months'):
+    def __init__(self, data_path, train_length, test_length, win_size, step, mode="train", target_channels = None):
         self.mode = mode
         self.step = step
         self.win_size = win_size
@@ -51,7 +51,12 @@ class ESASegLoader(Dataset):
         data_len = len(data)
 
         if self.mode == 'train':
-          self.train = data[:int(data_len * 0.8)]
+          #self.train = data[:int(data_len * 0.8)]
+          #self.train = data
+
+          # extract a small portion for training to speed up experiments
+          self.train = data[:int(data_len * 0.1)]
+          self.labels = self.labels[:int(data_len * 0.1)]
           print("train:", self.train.shape)
 
         if self.mode == 'val':
@@ -59,16 +64,31 @@ class ESASegLoader(Dataset):
           self.val_labels = self.labels[int(data_len * 0.8):]
           print("val:", self.val.shape)
 
-        if self.mode == 'test':
+        if self.mode == 'test' or self.mode == 'thre':
           # test data
-          test_df = pd.read_csv(data_path + '/' + '84_months.test.csv')
+          test_df = pd.read_csv(data_path + '/' + test_length + '.test.csv')
 
           test_data = test_df[self.target_channels].values.astype(np.float32)
-          self.test_labels = test_df[self.label_columns].values.astype(np.float32)
+          test_labels = test_df[self.label_columns].values.astype(np.float32)
+          timestamps = test_df['timestamp']
+          timestamps = pd.to_datetime(timestamps)
+        
 
           test_data = np.nan_to_num(test_data)
 
-          self.test = self.scaler.transform(test_data)
+          test_data = self.scaler.transform(test_data)
+
+          #self.test = test_data
+          #self.test_label = test_labels
+          #self.test_timestamps = timestamps
+
+          # extract a small portion for testing to speed up experiments
+          test_len = len(test_data)
+          self.test = test_data[:int(test_len * 0.1)]
+          self.test_labels = test_labels[:int(test_len * 0.1)]
+          self.test_timestamps = timestamps[:int(test_len * 0.1)]
+
+
           print("test:", self.test.shape)
 
     def __len__(self):
@@ -99,9 +119,13 @@ class ESASegLoader(Dataset):
                               index // self.step * self.win_size:index // self.step * self.win_size + self.win_size]), np.float32(
                 self.test_labels[index // self.step * self.win_size:index // self.step * self.win_size + self.win_size])
 
-def get_loader_segment(data_path, batch_size, win_size= 100, step = 100, mode = 'train', dataset = '3_months'):
+    def get_timestamps(self):
+      """Get all timestamps"""
+      return self.test_timestamps
 
-    dataset = ESASegLoader(data_path, win_size, step, mode=mode, train_length=dataset)
+def get_loader_segment(data_path, batch_size, train_length, test_length, win_size= 100, step = 100, mode = 'train', dataset = '3_months'):
+
+    dataset = ESASegLoader(data_path, train_length, test_length, win_size, step, mode=mode)
 
     shuffle = False
     if mode == 'train':
@@ -121,4 +145,54 @@ if __name__ == "__main__":
     print(data.shape)
 
     print(label.shape)
+
+class ESALabelsParser:
+    """
+    Parse ESA labels.csv file for event-based evaluation
+    """
+    
+    def __init__(self, labels_csv_path):
+        """
+        Args:
+            labels_csv_path: Path to labels.csv file
+        """
+        self.labels_df = pd.read_csv(labels_csv_path)
+        
+        # Parse timestamps
+        self.labels_df['StartTime'] = pd.to_datetime(self.labels_df['StartTime'])
+        self.labels_df['EndTime'] = pd.to_datetime(self.labels_df['EndTime'])
+        
+        print(f"Loaded {len(self.labels_df)} anomaly events")
+        print(f"Unique anomaly IDs: {self.labels_df['ID'].nunique()}")
+        
+    def get_labels_dataframe(self, channel_filter=None):
+        """
+        Get labels DataFrame, optionally filtered by channels
+        
+        Args:
+            channel_filter: List of channel names to include, or None for all
+            
+        Returns:
+            pandas DataFrame in ESA format
+        """
+        if channel_filter is None:
+            return self.labels_df.copy()
+        
+        # Filter by channels
+        filtered_df = self.labels_df[
+            self.labels_df['Channel'].isin(channel_filter)
+        ].copy()
+        
+        return filtered_df
+    
+    def get_full_range(self):
+        """Get full time range of data"""
+        return (
+            self.labels_df['StartTime'].min(),
+            self.labels_df['EndTime'].max()
+        )
+    
+    def get_anomaly_categories(self):
+        """Get unique anomaly categories"""
+        return self.labels_df['Category'].unique()
 
