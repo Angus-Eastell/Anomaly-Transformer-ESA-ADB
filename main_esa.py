@@ -20,7 +20,7 @@ def main(config):
     if config.mode == 'train':
         solver.train()
     elif config.mode == 'test':
-        solver.test()
+        solver.test_per_channel()
 
     return solver
 
@@ -39,8 +39,17 @@ if __name__ == '__main__':
     parser.add_argument('--dataset', type=str, default='credit')
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'test'])
     parser.add_argument('--data_path', type=str, default='./dataset/creditcard_ts.csv')
+    parser.add_argument('--train_length', type=str, default='3_months')
+    parser.add_argument('--test_length', type=str, default='84_months')
     parser.add_argument('--model_save_path', type=str, default='checkpoints')
     parser.add_argument('--anormly_ratio', type=float, default=4.00)
+    parser.add_argument('--beta', type=float, default=0.5)
+    parser.add_argument('--labels_csv_path', type=str, default= './dataset/ESA/labels.csv')
+    parser.add_argument('--target_channels',nargs='+',
+      default=["channel_41", "channel_42", "channel_43",
+        "channel_44", "channel_45", "channel_46"],
+      help='List of target channels')
+
 
     config = parser.parse_args()
 
