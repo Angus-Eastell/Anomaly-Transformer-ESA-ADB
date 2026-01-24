@@ -55,8 +55,8 @@ class ESASegLoader(Dataset):
           #self.train = data
 
           # extract a small portion for training to speed up experiments
-          self.train = data[:int(data_len * 0.1)]
-          self.labels = self.labels[:int(data_len * 0.1)]
+          self.train = data[:int(data_len * 0.8)]
+          self.labels = self.labels[:int(data_len * 0.8)]
           print("train:", self.train.shape)
 
         if self.mode == 'val':
@@ -78,15 +78,19 @@ class ESASegLoader(Dataset):
 
           test_data = self.scaler.transform(test_data)
 
-          #self.test = test_data
-          #self.test_label = test_labels
-          #self.test_timestamps = timestamps
+          self.test = test_data
+          self.test_labels = test_labels
+          self.test_timestamps = timestamps
 
           # extract a small portion for testing to speed up experiments
           test_len = len(test_data)
-          self.test = test_data[:int(test_len * 0.1)]
-          self.test_labels = test_labels[:int(test_len * 0.1)]
-          self.test_timestamps = timestamps[:int(test_len * 0.1)]
+          #self.test = test_data[int(test_len * 0.049):int(test_len * 0.051)]
+          #self.test_labels = test_labels[int(test_len * 0.049):int(test_len * 0.051)]
+          #self.test_timestamps = timestamps[int(test_len * 0.049):int(test_len * 0.051)]
+
+          #self.test = test_data[:int(test_len * 0.1)]
+          #self.test_labels = test_labels[:int(test_len * 0.1)]
+          #self.test_timestamps = timestamps[:int(test_len * 0.1)]
 
 
           print("test:", self.test.shape)

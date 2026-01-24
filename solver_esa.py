@@ -8,7 +8,8 @@ from utils.utils import *
 from model.AnomalyTransformer import AnomalyTransformer
 from data_factory.data_loader_esa import get_loader_segment, ESALabelsParser
 from ESA_metrics import ESAScores, ADTQC, ChannelAwareFScore
-
+import pandas as pd
+import gc
 
 def my_kl_loss(p, q):
     res = p * (torch.log(p + 0.0001) - torch.log(q + 0.0001))
@@ -69,30 +70,40 @@ class Solver(object):
 
         self.__dict__.update(Solver.DEFAULTS, **config)
 
-        self.train_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                               batch_size=self.batch_size, win_size=self.win_size,
-                                               mode='train',
-                                               dataset=self.dataset)
-        self.vali_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                               batch_size=self.batch_size, win_size=self.win_size,
-                                               mode='val',
-                                               dataset=self.dataset)
-        self.test_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                               batch_size=self.batch_size, win_size=self.win_size,
-                                               mode='test',
-                                               dataset=self.dataset)
-        self.thre_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                               batch_size=self.batch_size, win_size=self.win_size,
-                                               mode='thre',
-                                               dataset=self.dataset)
+        if self.mode == 'train':
+          self.train_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                mode='train',
+                                                dataset=self.dataset)
+          self.vali_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                mode='val',
+                                                dataset=self.dataset)
 
-        # Load labels
-        self.labels_parser = ESALabelsParser(self.labels_csv_path)
+        if self.mode == 'test':  
+
+          self.train_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                mode='train',
+                                                dataset=self.dataset)
+                                                                                  
+          self.test_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                mode='test',
+                                                dataset=self.dataset)
+          self.thre_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                mode='thre',
+                                                dataset=self.dataset)
+
+          # Load labels
+          self.labels_parser = ESALabelsParser(self.labels_csv_path)
 
         # channel names
         self.channel_names = self.target_channels
-        self.build_model()
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        print(self.device)
+        self.build_model()
         self.criterion = nn.MSELoss()
 
     def build_model(self):
@@ -144,7 +155,7 @@ class Solver(object):
         path = self.model_save_path
         if not os.path.exists(path):
             os.makedirs(path)
-        early_stopping = EarlyStopping(patience=3, verbose=True, dataset_name=self.dataset)
+        early_stopping = EarlyStopping(patience=7, verbose=True, dataset_name=self.dataset)
         train_steps = len(self.train_loader)
 
         for epoch in range(self.num_epochs):
@@ -202,7 +213,7 @@ class Solver(object):
             print("Epoch: {} cost time: {}".format(epoch + 1, time.time() - epoch_time))
             train_loss = np.average(loss1_list)
 
-            vali_loss1, vali_loss2 = self.vali(self.test_loader)
+            vali_loss1, vali_loss2 = self.vali(self.vali_loader)
 
             print(
                 "Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} ".format(
@@ -257,14 +268,34 @@ class Solver(object):
         print(f"Unique anomaly IDs: {y_true_df['ID'].nunique()}")
         print(f"Time range: {full_range[0]} to {full_range[1]}")
         
-        # Create predictions in ESA format (multi-channel)
+        """# Create predictions in ESA format (multi-channel)
         y_pred_dict = {}
         for ch_idx, ch_name in enumerate(self.channel_names):
             y_pred_channel = []
             for i in range(len(predictions)):
                 y_pred_channel.append([timestamps.iloc[i], int(predictions[i, ch_idx])])
             y_pred_dict[ch_name] = y_pred_channel
-        
+
+        # single channel format
+        y_any_pred_dict = {}
+        global_pred = predictions.any(axis=1).astype(int)
+        y_any_pred = []
+        for i in range(len(global_pred)):
+            y_any_pred.append([timestamps.iloc[i], int(global_pred[i])])
+
+        #y_any_pred_dict["is_anomaly"] = y_any_pred"""
+
+        ts = timestamps.tolist()  # avoid repeated .iloc
+
+        y_pred_dict = {
+            ch_name: [[t, int(p)] for t, p in zip(ts, predictions[:, ch_idx])]
+            for ch_idx, ch_name in enumerate(self.channel_names)
+        }
+
+        global_pred = predictions.any(axis=1).astype(int)
+        y_any_pred = [[t, int(p)] for t, p in zip(ts, global_pred)]
+
+                
         # 1. ESA Scores (Event-wise and Affiliation-based)
         print("\n--- Event-wise and Affiliation-based Scores ---")
         try:
@@ -276,8 +307,8 @@ class Solver(object):
             print("Telemetry range:", full_range[0], "to", full_range[1])
             print("Labels range:", y_true_df["StartTime"].min(), "to", y_true_df["EndTime"].max())
             # Convert single channel for ESAScores
-            y_pred_first = y_pred_dict[self.channel_names[0]]
-            esa_results = esa_metric.score(y_true_df, y_pred_first)
+            #y_pred_first = y_pred_dict[self.channel_names[0]]
+            esa_results = esa_metric.score(y_true_df, y_any_pred)
             
             for metric_name, value in esa_results.items():
                 print(f"{metric_name:30s}: {value:8.4f}")
@@ -335,6 +366,7 @@ class Solver(object):
 
         print("======================TEST MODE======================")
 
+        start_time = time.time()
         criterion = nn.MSELoss(reduce=False)
 
         # (1) stastic on the train set
@@ -489,6 +521,12 @@ class Solver(object):
         print("pred: ", pred.shape)
         print("gt:   ", gt.shape)
 
+        end_time = time.time()
+
+        inference_time = end_time - start_time
+
+        print('Inference Time:', inference_time)
+
         from sklearn.metrics import precision_recall_fscore_support
         from sklearn.metrics import accuracy_score
 
@@ -509,8 +547,17 @@ class Solver(object):
                 ground_truth=gt,
                 anomaly_scores=test_energy
             )
+        
+        timestamps = self.test_loader.dataset.get_timestamps().reset_index(drop=True)
 
-        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc
+        df_pred = pd.DataFrame(
+            pred,
+            columns=self.channel_names
+        )
+        df_pred.insert(0, "timestamp", timestamps)
+
+
+        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, pred, inference_time
 
       
     def test_per_channel(self):
@@ -523,6 +570,8 @@ class Solver(object):
         print("======================TEST MODE======================")
 
         criterion = nn.MSELoss(reduce=False)
+
+        start_time = time.time()
 
         # (1) stastic on the train set
         attens_energy = []
@@ -599,7 +648,7 @@ class Solver(object):
         test_energy = np.array(attens_energy)
 
         combined_energy = np.concatenate([train_energy, test_energy], axis=0)
-        print(combined_energy.shape)
+        #print(combined_energy.shape)
         thresh = np.percentile(combined_energy, 100 - self.anormly_ratio, axis = (0,1))
         print("Per channel thresholds :", thresh)
 
@@ -679,6 +728,12 @@ class Solver(object):
         gt = np.array(gt)
         gt = (gt == 2).astype(int)
 
+        end_time = time.time()
+
+        inference_time = end_time - start_time
+
+        print('Inference Time:', inference_time)
+
         from sklearn.metrics import precision_recall_fscore_support
         from sklearn.metrics import accuracy_score
 
@@ -699,5 +754,165 @@ class Solver(object):
                 ground_truth=gt,
                 anomaly_scores=test_energy
             )
+        
+        timestamps = self.test_loader.dataset.get_timestamps().reset_index(drop=True)
 
-        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc
+        df_pred = pd.DataFrame(
+            pred,
+            columns=self.channel_names
+        )
+        df_pred.insert(0, "timestamp", timestamps)
+
+        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, df_pred, inference_time
+
+    def test_low_mem(self):
+
+      self.model.load_state_dict(
+          torch.load(
+              os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth'),
+              map_location=self.device
+          )
+      )
+      self.model.eval()
+      temperature = 50
+
+      print("======================TEST MODE (LOW MEMORY)======================")
+
+      criterion = nn.MSELoss(reduction='none')
+      start_time = time.time()
+
+      def compute_assoc_loss(series, prior):
+          series_loss = 0.0
+          prior_loss = 0.0
+
+          for u in range(len(prior)):
+              norm_prior = prior[u] / torch.sum(prior[u], dim=-1, keepdim=True)
+              norm_prior = norm_prior.expand(-1, -1, -1, self.win_size)
+
+              series_loss += my_kl_loss(series[u], norm_prior.detach()) * temperature
+              prior_loss += my_kl_loss(norm_prior, series[u].detach()) * temperature
+
+          return series_loss, prior_loss
+
+      # ===================== (1) TRAIN ENERGY =====================
+      train_energy = []
+
+      with torch.no_grad():
+          for i, (input_data, _) in enumerate(self.train_loader):
+              input = input_data.float().to(self.device)
+
+              output, series, prior, _ = self.model(input)
+              loss = criterion(input, output)
+
+              series_loss, prior_loss = compute_assoc_loss(series, prior)
+
+              metric = torch.softmax(-(series_loss + prior_loss), dim=-1)
+              metric = metric.unsqueeze(-1)
+
+              cri = (metric * loss).cpu().numpy()
+              train_energy.append(cri)
+
+              del input, output, series, prior, loss, metric, cri
+
+      train_energy = np.concatenate(train_energy, axis=0)
+
+         
+      del self.train_loader
+      gc.collect()
+      torch.cuda.empty_cache()
+
+      # ===================== (2) THRESHOLD =====================
+      test_energy_tmp = []
+
+      with torch.no_grad():
+          for input_data, _ in self.thre_loader:
+              input = input_data.float().to(self.device)
+
+              output, series, prior, _ = self.model(input)
+              loss = criterion(input, output)
+
+              series_loss, prior_loss = compute_assoc_loss(series, prior)
+
+              metric = torch.softmax(-(series_loss + prior_loss), dim=-1)
+              metric = metric.unsqueeze(-1)
+
+              cri = (metric * loss).cpu().numpy()
+              test_energy_tmp.append(cri)
+
+              del input, output, series, prior, loss, metric, cri
+
+      test_energy_tmp = np.concatenate(test_energy_tmp, axis=0)
+
+      combined_energy = np.concatenate([train_energy, test_energy_tmp], axis=0)
+      thresh = np.percentile(combined_energy, 100 - self.anormly_ratio, axis=(0, 1))
+
+      print("Per channel thresholds:", thresh)
+
+      del self.thre_loader
+      gc.collect()
+      torch.cuda.empty_cache()
+
+      # ===================== (3) TEST SET =====================
+      attens_energy = []
+      test_labels = []
+
+      with torch.no_grad():
+          for input_data, labels in self.test_loader:
+              input = input_data.float().to(self.device)
+
+              output, series, prior, _ = self.model(input)
+              loss = criterion(input, output)
+
+              series_loss, prior_loss = compute_assoc_loss(series, prior)
+
+              metric = torch.softmax(-(series_loss + prior_loss), dim=-1)
+              metric = metric.unsqueeze(-1)
+
+              cri = (metric * loss).cpu().numpy()
+
+              attens_energy.append(cri)
+              test_labels.append(labels)
+
+              del input, output, series, prior, loss, metric, cri
+
+
+      attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1, self.output_c)
+      test_labels = np.concatenate(test_labels, axis=0).reshape(-1, self.output_c)
+
+      pred = (attens_energy > thresh[None, :]).astype(int)
+      gt = (test_labels == 2).astype(int)
+
+      end_time = time.time()
+      inference_time = end_time - start_time
+
+      print("Inference Time:", inference_time)
+
+      from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+
+      gt_any = gt.any(axis=1)
+      pred_any = pred.any(axis=1)
+
+      accuracy = accuracy_score(gt_any, pred_any)
+      precision, recall, f_score, _ = precision_recall_fscore_support(
+          gt_any, pred_any, average='binary'
+      )
+
+      print(
+          "Accuracy : {:.4f}, Precision : {:.4f}, Recall : {:.4f}, F-score : {:.4f}".format(
+              accuracy, precision, recall, f_score
+          )
+      )
+
+      esa_results, channel_results, adtqc = self._compute_esa_metrics(
+          predictions=pred,
+          ground_truth=gt,
+          anomaly_scores=attens_energy
+      )
+
+      timestamps = self.test_loader.dataset.get_timestamps().reset_index(drop=True)
+
+      df_pred = pd.DataFrame(pred, columns=self.channel_names)
+      df_pred.insert(0, "timestamp", timestamps)
+
+      return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, df_pred, inference_time
+

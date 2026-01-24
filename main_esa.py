@@ -1,5 +1,8 @@
 import os
 import argparse
+import json
+import pandas as pd
+import csv
 
 from torch.backends import cudnn
 from utils.utils import *
@@ -10,17 +13,92 @@ from solver_esa import Solver
 def str2bool(v):
     return v.lower() in ('true')
 
+def write_results_csv(
+    csv_path,
+    accuracy,
+    precision,
+    recall,
+    f_score,
+    esa_results,
+    channel_results,
+    adtqc,
+    inference_time,
+    run_name):
+
+
+    row = {
+        "run_name": run_name,
+        "total_inference_time": inference_time,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f_score": f_score,
+    }
+
+    # flatten ESA metrics
+    for k, v in esa_results.items():
+        row[f"esa_{k}"] = v
+
+    for k, v in channel_results.items():
+        row[f"channel_{k}"] = v
+
+    for k, v in adtqc.items():
+        row[f"adtqc_{k}"] = v
+
+    file_exists = os.path.exists(csv_path)
+
+    with open(csv_path, "a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=row.keys())
+        if not file_exists:
+            writer.writeheader()
+        writer.writerow(row)
+
 
 def main(config):
     cudnn.benchmark = True
+
     if (not os.path.exists(config.model_save_path)):
         mkdir(config.model_save_path)
     solver = Solver(vars(config))
 
+    if (not os.path.exists(config.results_path)):
+        mkdir(config.results_path)
+
+    run_dir = os.path.join(config.results_path, config.run_name)
+    os.makedirs(run_dir, exist_ok=True)
+
+
     if config.mode == 'train':
         solver.train()
+        print('Saving train config')
+        with open(os.path.join(run_dir, "train_config.json"), "w") as f:
+            json.dump(vars(config), f, indent=4)
     elif config.mode == 'test':
-        solver.test_per_channel()
+        print('Saving test config')
+        with open(os.path.join(run_dir, "test_config.json"), "w") as f:
+            json.dump(vars(config), f, indent=4)
+
+        accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, pred_df, inference_time = solver.test_low_mem()
+
+        print('Writing Results')
+
+        pred_path = os.path.join(run_dir, 'pred.csv')
+        pred_df.to_csv(pred_path, index = False)
+
+        write_results_csv(
+            csv_path=os.path.join(run_dir, "results.csv"),
+            accuracy=accuracy,
+            precision=precision,
+            recall=recall,
+            f_score=f_score,
+            esa_results=esa_results,
+            channel_results=channel_results,
+            adtqc=adtqc,
+            inference_time = inference_time,
+            run_name= config.run_name
+            )
+
+
 
     return solver
 
@@ -42,6 +120,8 @@ if __name__ == '__main__':
     parser.add_argument('--train_length', type=str, default='3_months')
     parser.add_argument('--test_length', type=str, default='84_months')
     parser.add_argument('--model_save_path', type=str, default='checkpoints')
+    parser.add_argument('--results_path', type=str, default='results')
+    parser.add_argument('--run_name', type=str, default='model')
     parser.add_argument('--anormly_ratio', type=float, default=4.00)
     parser.add_argument('--beta', type=float, default=0.5)
     parser.add_argument('--labels_csv_path', type=str, default= './dataset/ESA/labels.csv')
@@ -52,6 +132,7 @@ if __name__ == '__main__':
 
 
     config = parser.parse_args()
+
 
     args = vars(config)
     print('------------ Options -------------')
