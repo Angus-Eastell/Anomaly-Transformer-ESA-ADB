@@ -2,13 +2,15 @@
 
 Git for anomaly transformer with adapations for ESA dataset.
 
-To run code: copy preprocessed datasets into data folder in subset folder called ESA_mission1 or ESA_mission2 based on the mission chosen and run the bash file to run training and testing. 
+To run model:
+- copy preprocessed datasets into data folder in subset folder called ESA_mission1 or ESA_mission2 based on the mission chosen
+- run the bash file to run training and testing 
 ``` bash
 bash ./scripts/ESA_mission1.sh
 bash ./scripts/ESA_mission2.sh
 ```
-Paramteres/ training dataset length can be varied using the .sh file. 
-The parameters that can be vaired can be found in the main_esa.py python file
+- Paramteres/ training dataset length can be varied using the .sh file. 
+- The parameters that can be vaired can be found in the main_esa.py python file.
 
 
 # Anomaly-Transformer (ICLR 2022 Spotlight) (Forked Git)
