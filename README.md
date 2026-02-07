@@ -1,4 +1,17 @@
-# Anomaly-Transformer (ICLR 2022 Spotlight)
+# Indra Deimos MDM3: Anomaly Transformer for ESA-ADB.
+
+Git for anomaly transformer with adapations for ESA dataset.
+
+To run code: copy preprocessed datasets into data folder in subset folder called ESA_mission1 or ESA_mission2 based on the mission chosen and run the bash file to run training and testing. 
+``` bash
+bash ./scripts/ESA_mission1.sh
+bash ./scripts/ESA_mission2.sh
+```
+Paramteres/ training dataset length can be varied using the .sh file. 
+The parameters that can be vaired can be found in the main_esa.py python file
+
+
+# Anomaly-Transformer (ICLR 2022 Spotlight) (Forked Git)
 Anomaly Transformer: Time Series Anomaly Detection with Association Discrepancy
 
 Unsupervised detection of anomaly points in time series is a challenging problem, which requires the model to learn informative representation and derive a distinguishable criterion. In this paper, we propose the Anomaly Transformer in these three folds:
