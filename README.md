@@ -10,7 +10,7 @@ bash ./scripts/ESA_mission1.sh
 bash ./scripts/ESA_mission2.sh
 ```
 - paramteres/ training dataset length can be varied using the .sh file. 
-- the parameters that can be vaired can be found in the main_esa.py python file on line 137.
+- the parameters that can be vaired can be found in the main_esa.py python file on line 145.
 
 
 # Anomaly-Transformer (ICLR 2022 Spotlight) (Forked Git)
