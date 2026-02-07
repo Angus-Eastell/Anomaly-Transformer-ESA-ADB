@@ -9,7 +9,7 @@ To run model:
 bash ./scripts/ESA_mission1.sh
 bash ./scripts/ESA_mission2.sh
 ```
-- paramteres/ training dataset length can be varied using the .sh file. 
+- paramteres/ training dataset length can be varied using the .sh file
 - the parameters that can be vaired can be found in the main_esa.py python file on line 145.
 
 
