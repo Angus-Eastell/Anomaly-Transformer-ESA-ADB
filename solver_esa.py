@@ -6,7 +6,7 @@ import os
 import time
 from utils.utils import *
 from model.AnomalyTransformer import AnomalyTransformer
-from data_factory.data_loader_esa import get_loader_segment, ESALabelsParser
+from data_factory.data_loader_esa import get_loader_segment, ESALabelsParser, get_loader_segment_clean
 from ESA_metrics import ESAScores, ADTQC, ChannelAwareFScore
 import pandas as pd
 import gc
@@ -26,7 +26,7 @@ def adjust_learning_rate(optimizer, epoch, lr_):
 
 
 class EarlyStopping:
-    def __init__(self, patience=7, verbose=False, dataset_name='', delta=0):
+    def __init__(self, patience=10, verbose=False, dataset_name='', delta=0):
         self.patience = patience
         self.verbose = verbose
         self.counter = 0
@@ -70,34 +70,50 @@ class Solver(object):
 
         self.__dict__.update(Solver.DEFAULTS, **config)
 
+        if self.mission == 'mission_1':
+          self.target_channels = ['channel_41', 'channel_42', 'channel_43', 'channel_44', 'channel_45', 'channel_46']
+
+        elif self.mission == 'mission_2':
+          self.target_channels = ['channel_18', 'channel_19', 'channel_20', 'channel_21', 'channel_22', 'channel_23', 'channel_24', 'channel_25', 'channel_26', 'channel_27', 'channel_28']
+
+
         if self.mode == 'train':
-          self.train_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                                batch_size=self.batch_size, win_size=self.win_size,
-                                                mode='train',
-                                                dataset=self.dataset)
-          self.vali_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                                batch_size=self.batch_size, win_size=self.win_size,
-                                                mode='val',
-                                                dataset=self.dataset)
+          self.train_loader = get_loader_segment_clean(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size, step = self.step,
+                                                mode='train')
+          self.vali_loader = get_loader_segment_clean(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size, step = self.step,
+                                                mode='val')
+          #self.test_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+          #                                      batch_size=self.batch_size, win_size=self.win_size, step =  self.step,
+          #                                      mode='test',
+          #                                      dataset=self.dataset)
 
         if self.mode == 'test':  
 
           self.train_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                batch_size=self.batch_size, win_size=self.win_size, step = 10,
                                                 mode='train',
                                                 dataset=self.dataset)
                                                                                   
           self.test_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                                batch_size=self.batch_size, win_size=self.win_size,
+                                                batch_size=self.batch_size, win_size=self.win_size, step = self.step,
                                                 mode='test',
                                                 dataset=self.dataset)
           self.thre_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
-                                                batch_size=self.batch_size, win_size=self.win_size,
-                                                mode='thre',
+                                                batch_size=self.batch_size, win_size=self.win_size, step = 10,
+                                                mode='test',
                                                 dataset=self.dataset)
 
           # Load labels
           self.labels_parser = ESALabelsParser(self.labels_csv_path)
+
+
+        if self.mode == 'thresh_analysis':
+           self.vali_loader = get_loader_segment(self.data_path, train_length = self.train_length, test_length = self.test_length,
+                                                batch_size=self.batch_size, win_size=self.win_size, step = self.step,
+                                                mode='val',
+                                                dataset=self.dataset)
 
         # channel names
         self.channel_names = self.target_channels
@@ -107,7 +123,7 @@ class Solver(object):
         self.criterion = nn.MSELoss()
 
     def build_model(self):
-        self.model = AnomalyTransformer(win_size=self.win_size, enc_in=self.input_c, c_out=self.output_c, e_layers=3)
+        self.model = AnomalyTransformer(win_size=self.win_size, enc_in=self.input_c, c_out=self.output_c, e_layers=self.e_layers, n_heads = self.n_heads, d_model = self.d_model)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
 
         if torch.cuda.is_available():
@@ -118,7 +134,7 @@ class Solver(object):
 
         loss_1 = []
         loss_2 = []
-        for i, (input_data, _) in enumerate(vali_loader):
+        for i, (input_data, _, _) in enumerate(vali_loader):
             input = input_data.float().to(self.device)
             output, series, prior, _ = self.model(input)
             series_loss = 0.0
@@ -157,6 +173,8 @@ class Solver(object):
             os.makedirs(path)
         early_stopping = EarlyStopping(patience=7, verbose=True, dataset_name=self.dataset)
         train_steps = len(self.train_loader)
+        self.epoch_count = 0
+        rec_loss = []
 
         for epoch in range(self.num_epochs):
             iter_count = 0
@@ -164,7 +182,7 @@ class Solver(object):
 
             epoch_time = time.time()
             self.model.train()
-            for i, (input_data, labels) in enumerate(self.train_loader):
+            for i, (input_data, _, _) in enumerate(self.train_loader):
 
                 self.optimizer.zero_grad()
                 iter_count += 1
@@ -218,11 +236,23 @@ class Solver(object):
             print(
                 "Epoch: {0}, Steps: {1} | Train Loss: {2:.7f} Vali Loss: {3:.7f} ".format(
                     epoch + 1, train_steps, train_loss, vali_loss1))
+
+            print(
+                f"rec: {rec_loss.item():.4f}, "
+                f"series_kl: {series_loss.item():.4f}, "
+                f"prior_kl: {prior_loss.item():.4f}"
+            )
+
             early_stopping(vali_loss1, vali_loss2, self.model, path)
             if early_stopping.early_stop:
                 print("Early stopping")
                 break
-            adjust_learning_rate(self.optimizer, epoch + 1, self.lr)
+
+            self.epoch_count += 1
+            # at least 2 epochs at each lr
+            if early_stopping.counter >= 3 and self.epoch_count >= 2:
+              adjust_learning_rate(self.optimizer, epoch + 1, self.lr)
+              self.epoch_count = 0
 
     def _compute_esa_metrics(self, predictions, ground_truth, anomaly_scores):
         """
@@ -357,6 +387,75 @@ class Solver(object):
 
         return esa_results, channel_results, adtqc_results
 
+    def thresh_analysis(self):
+
+        self.model.load_state_dict(
+            torch.load(
+                os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth')))
+        self.model.eval()
+
+        self.model.eval()
+        temperature = self.temperature
+
+        print("======================Thresh Analysis======================")
+
+        criterion = nn.MSELoss(reduction='none')
+        start_time = time.time()
+
+        def compute_assoc_loss(series, prior):
+            series_loss = 0.0
+            prior_loss = 0.0
+
+            for u in range(len(prior)):
+                norm_prior = prior[u] / torch.sum(prior[u], dim=-1, keepdim=True)
+                norm_prior = norm_prior.expand(-1, -1, -1, self.win_size)
+
+                series_loss += my_kl_loss(series[u], norm_prior.detach()) * temperature
+                prior_loss += my_kl_loss(norm_prior, series[u].detach()) * temperature
+
+            return series_loss, prior_loss
+
+        # ==========================================================
+        # (1) Val ENERGY — ONLINE RECONSTRUCTION
+        # ==========================================================
+        dataset_len = len(self.vali_loader.dataset.val)
+        val_energy_sum = np.zeros((dataset_len, self.output_c), dtype=np.float32)
+        val_energy_count = np.zeros((dataset_len, 1), dtype=np.int32)
+
+        with torch.no_grad():
+            for input_data, _, start_indices in self.vali_loader:
+                input = input_data.float().to(self.device)
+
+                output, series, prior, _ = self.model(input)
+                loss = criterion(input, output)
+
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1).unsqueeze(-1)
+
+                cri = (metric * loss).cpu().numpy()  # (B, W, C)
+
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    end = start + self.win_size
+                    val_energy_sum[start:end] += cri[b]
+                    val_energy_count[start:end] += 1
+
+                del input, output, series, prior, loss, metric, cri
+
+        val_energy = val_energy_sum / np.maximum(val_energy_count, 1)
+
+        del val_energy_sum, val_energy_count
+        del self.vali_loader
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        df_energy = pd.DataFrame(
+            val_energy,
+            columns=self.channel_names
+        )
+
+        return df_energy
+        
     def test(self):
         self.model.load_state_dict(
             torch.load(
@@ -559,360 +658,459 @@ class Solver(object):
 
         return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, pred, inference_time
 
-      
-    def test_per_channel(self):
+    def test_low_mem_overlapping_new(self):
+
         self.model.load_state_dict(
             torch.load(
-                os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth')))
+                os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth'),
+                map_location=self.device
+            )
+        )
         self.model.eval()
-        temperature = 50
+        temperature = self.temperature
 
-        print("======================TEST MODE======================")
+        print("======================TEST MODE (LOW MEMORY, STREAMING)======================")
 
-        criterion = nn.MSELoss(reduce=False)
-
+        criterion = nn.MSELoss(reduction='none')
         start_time = time.time()
 
-        # (1) stastic on the train set
-        attens_energy = []
-        for i, (input_data, labels) in enumerate(self.train_loader):
-            input = input_data.float().to(self.device)
-            output, series, prior, _ = self.model(input)
-            loss = criterion(input, output)
+        def compute_assoc_loss(series, prior):
             series_loss = 0.0
             prior_loss = 0.0
+
             for u in range(len(prior)):
-                if u == 0:
-                    series_loss = my_kl_loss(series[u], (
-                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                   self.win_size)).detach()) * temperature
-                    prior_loss = my_kl_loss(
-                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                self.win_size)),
-                        series[u].detach()) * temperature
-                else:
-                    series_loss += my_kl_loss(series[u], (
-                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                   self.win_size)).detach()) * temperature
-                    prior_loss += my_kl_loss(
-                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                self.win_size)),
-                        series[u].detach()) * temperature
+                norm_prior = prior[u] / torch.sum(prior[u], dim=-1, keepdim=True)
+                norm_prior = norm_prior.expand(-1, -1, -1, self.win_size)
 
-            metric = torch.softmax((-series_loss - prior_loss), dim=-1)
-            metric = metric.unsqueeze(-1)
-            cri = metric * loss
-            cri = cri.detach().cpu().numpy()
-            attens_energy.append(cri)
+                series_loss += my_kl_loss(series[u], norm_prior.detach()) * temperature
+                prior_loss += my_kl_loss(norm_prior, series[u].detach()) * temperature
 
-        attens_energy = np.concatenate(attens_energy, axis=0)#.reshape(-1)
-        #attends_energy = attens_energy.reshape(-1, attens_energy.shape[-1])
-        train_energy = np.array(attens_energy)
+            return series_loss, prior_loss
 
-        # (2) find the threshold
-        attens_energy = []
-        for i, (input_data, labels) in enumerate(self.thre_loader):
-            input = input_data.float().to(self.device)
-            output, series, prior, _ = self.model(input)
+        # ==========================================================
+        # (1) TRAIN ENERGY — ONLINE RECONSTRUCTION
+        # ==========================================================
+        dataset_len = len(self.train_loader.dataset.train)
+        train_energy_sum = np.zeros((dataset_len, self.output_c), dtype=np.float32)
+        train_energy_count = np.zeros((dataset_len, 1), dtype=np.int32)
 
-            loss = criterion(input, output)
+        with torch.no_grad():
+            for input_data, _, start_indices in self.train_loader:
+                input = input_data.float().to(self.device)
 
-            series_loss = 0.0
-            prior_loss = 0.0
-            for u in range(len(prior)):
-                if u == 0:
-                    series_loss = my_kl_loss(series[u], (
-                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                   self.win_size)).detach()) * temperature
-                    prior_loss = my_kl_loss(
-                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                self.win_size)),
-                        series[u].detach()) * temperature
-                else:
-                    series_loss += my_kl_loss(series[u], (
-                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                   self.win_size)).detach()) * temperature
-                    prior_loss += my_kl_loss(
-                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                self.win_size)),
-                        series[u].detach()) * temperature
-            # Metric
-            metric = torch.softmax((-series_loss - prior_loss), dim=-1)
-            metric = metric.unsqueeze(-1)
-            cri = metric * loss
-            cri = cri.detach().cpu().numpy()
-            attens_energy.append(cri)
-  
-        attens_energy = np.concatenate(attens_energy, axis=0)#.reshape(-1)
-        #attends_energy = attens_energy.reshape(-1, attens_energy.shape[-1])
-        test_energy = np.array(attens_energy)
+                output, series, prior, _ = self.model(input)
+                loss = criterion(input, output)
 
-        combined_energy = np.concatenate([train_energy, test_energy], axis=0)
-        #print(combined_energy.shape)
-        thresh = np.percentile(combined_energy, 100 - self.anormly_ratio, axis = (0,1))
-        print("Per channel thresholds :", thresh)
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1).unsqueeze(-1)
 
-        # (3) evaluation on the test set
-        test_labels = []
-        attens_energy = []
-        for i, (input_data, labels) in enumerate(self.thre_loader):
-            input = input_data.float().to(self.device)
-            output, series, prior, _ = self.model(input)
+                cri = (metric * loss).cpu().numpy()  # (B, W, C)
 
-            loss = criterion(input, output)
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    end = start + self.win_size
+                    train_energy_sum[start:end] += cri[b]
+                    train_energy_count[start:end] += 1
 
-            series_loss = 0.0
-            prior_loss = 0.0
-            for u in range(len(prior)):
-                if u == 0:
-                    series_loss = my_kl_loss(series[u], (
-                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                   self.win_size)).detach()) * temperature
-                    prior_loss = my_kl_loss(
-                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                self.win_size)),
-                        series[u].detach()) * temperature
-                else:
-                    series_loss += my_kl_loss(series[u], (
-                            prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                   self.win_size)).detach()) * temperature
-                    prior_loss += my_kl_loss(
-                        (prior[u] / torch.unsqueeze(torch.sum(prior[u], dim=-1), dim=-1).repeat(1, 1, 1,
-                                                                                                self.win_size)),
-                        series[u].detach()) * temperature
-            metric = torch.softmax((-series_loss - prior_loss), dim=-1)
+                del input, output, series, prior, loss, metric, cri
 
-            metric = metric.unsqueeze(-1)
-            cri = metric * loss
-            cri = cri.detach().cpu().numpy()
-            attens_energy.append(cri)
-            test_labels.append(labels)
+        train_energy = train_energy_sum / np.maximum(train_energy_count, 1)
 
-        attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1, self.output_c)
-        test_labels = np.concatenate(test_labels, axis=0).reshape(-1, self.output_c)
-        test_energy = np.array(attens_energy)
-        test_labels = np.array(test_labels)
-
-        pred = (test_energy > thresh[None, :]).astype(int)
-
-        gt = test_labels.astype(int)
-
-        print("pred:   ", pred.shape)
-        print("gt:     ", gt.shape)
-
-        # detection adjustment: please see this issue for more information https://github.com/thuml/Anomaly-Transformer/issues/14
+        del train_energy_sum, train_energy_count
+        del self.train_loader
+        gc.collect()
+        torch.cuda.empty_cache()
         """
-        anomaly_state = False
-        for i in range(len(gt)):
-            if gt[i] == 1 and pred[i] == 1 and not anomaly_state:
-                anomaly_state = True
-                for j in range(i, 0, -1):
-                    if gt[j] == 0:
-                        break
-                    else:
-                        if pred[j] == 0:
-                            pred[j] = 1
-                for j in range(i, len(gt)):
-                    if gt[j] == 0:
-                        break
-                    else:
-                        if pred[j] == 0:
-                            pred[j] = 1
-            elif gt[i] == 0:
-                anomaly_state = False
-            if anomaly_state:
-                pred[i] = 1
+        # ==========================================================
+        # (1) Test ENERGY — ONLINE RECONSTRUCTION
+        # ==========================================================
+        dataset_len = len(self.thre_loader.dataset.test)
+        thre_energy_sum = np.zeros((dataset_len, self.output_c), dtype=np.float32)
+        thre_energy_count = np.zeros((dataset_len, 1), dtype=np.int32)
+
+        with torch.no_grad():
+            for input_data, _, start_indices in self.thre_loader:
+                input = input_data.float().to(self.device)
+
+                output, series, prior, _ = self.model(input)
+                loss = criterion(input, output)
+
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1).unsqueeze(-1)
+
+                cri = (metric * loss).cpu().numpy()  # (B, W, C)
+
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    end = start + self.win_size
+                    thre_energy_sum[start:end] += cri[b]
+                    thre_energy_count[start:end] += 1
+
+                del input, output, series, prior, loss, metric, cri
+
+        thre_energy = thre_energy_sum / np.maximum(thre_energy_count, 1)
+
+        del thre_energy_sum, thre_energy_count
+        del self.thre_loader
+        gc.collect()
+        torch.cuda.empty_cache()
         """
+        # ==========================================================
+        # (2) THRESHOLD
+        # ==========================================================
+        #combined_energy = np.concatenate([train_energy, thre_energy], axis=0)
+        thresh = np.percentile(
+            train_energy,
+            100 - self.anormly_ratio
+        )
+        print("Per channel thresholds:", thresh)
+      
+        # ==========================================================
+        # (3) TEST ENERGY — ONLINE RECONSTRUCTION
+        # ==========================================================
+        dataset_len = len(self.test_loader.dataset.test)
+        test_energy_sum = np.zeros((dataset_len, self.output_c), dtype=np.float32)
+        test_energy_count = np.zeros((dataset_len, 1), dtype=np.int32)
 
-        pred = np.array(pred)
-        gt = np.array(gt)
-        gt = (gt == 2).astype(int)
+        test_labels_full = self.test_loader.dataset.test_labels
 
-        end_time = time.time()
+        with torch.no_grad():
+            for input_data, _, start_indices in self.test_loader:
+                input = input_data.float().to(self.device)
 
-        inference_time = end_time - start_time
+                output, series, prior, _ = self.model(input)
+                loss = criterion(input, output)
 
-        print('Inference Time:', inference_time)
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1).unsqueeze(-1)
 
-        from sklearn.metrics import precision_recall_fscore_support
-        from sklearn.metrics import accuracy_score
+                cri = (metric * loss).cpu().numpy()
+
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    end = start + self.win_size
+                    test_energy_sum[start:end] += cri[b]
+                    test_energy_count[start:end] += 1
+
+                del input, output, series, prior, loss, metric, cri
+
+        attens_energy = test_energy_sum / np.maximum(test_energy_count, 1)
+
+        del test_energy_sum, test_energy_count
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        # ==========================================================
+        # (4) PREDICTION + METRICS
+        # ==========================================================
+        pred = (attens_energy > thresh).astype(int)
+        gt = (test_labels_full == 1).astype(int)
+
+        from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
         gt_any = gt.any(axis=1)
         pred_any = pred.any(axis=1)
 
         accuracy = accuracy_score(gt_any, pred_any)
+        precision, recall, f_score, _ = precision_recall_fscore_support(
+            gt_any, pred_any, average='binary'
+        )
 
-        precision, recall, f_score, support = precision_recall_fscore_support(gt_any, pred_any,
-                                                                              average='binary')
         print(
-            "Accuracy : {:0.4f}, Precision : {:0.4f}, Recall : {:0.4f}, F-score : {:0.4f} ".format(
-                accuracy, precision,
-                recall, f_score))
-
-        esa_results, channel_results, adtqc = self._compute_esa_metrics(
-                predictions=pred,
-                ground_truth=gt,
-                anomaly_scores=test_energy
+            "Accuracy : {:.4f}, Precision : {:.4f}, Recall : {:.4f}, F-score : {:.4f}".format(
+                accuracy, precision, recall, f_score
             )
-        
+        )
+
+        # ==========================================================
+        # (5) ADJUSTMENT (ESA protocol)
+        # ==========================================================
+        anomaly_state = False
+        for i in range(len(gt_any)):
+            if gt_any[i] == 1 and pred_any[i] == 1 and not anomaly_state:
+                anomaly_state = True
+                for j in range(i, 0, -1):
+                    if gt_any[j] == 0:
+                        break
+                    if pred_any[j] == 0:
+                        pred_any[j] = 1
+                for j in range(i, len(gt_any)):
+                    if gt_any[j] == 0:
+                        break
+                    if pred_any[j] == 0:
+                        pred_any[j] = 1
+            elif gt_any[i] == 0:
+                anomaly_state = False
+            if anomaly_state:
+                pred_any[i] = 1
+
+        adj_accuracy = accuracy_score(gt_any, pred_any)
+        adj_precision, adj_recall, adj_f_score, _ = precision_recall_fscore_support(
+            gt_any, pred_any, average='binary'
+        )
+
+        print("Adjusted scores")
+        print(
+            "Accuracy : {:.4f}, Precision : {:.4f}, Recall : {:.4f}, F-score : {:.4f}".format(
+                adj_accuracy, adj_precision, adj_recall, adj_f_score
+            )
+        )
+
+        # ==========================================================
+        # (6) ESA METRICS + OUTPUTS
+        # ==========================================================
+        esa_results, channel_results, adtqc = self._compute_esa_metrics(
+            predictions=pred,
+            ground_truth=gt,
+            anomaly_scores=attens_energy
+        )
+
         timestamps = self.test_loader.dataset.get_timestamps().reset_index(drop=True)
 
-        df_pred = pd.DataFrame(
-            pred,
-            columns=self.channel_names
-        )
+        df_pred = pd.DataFrame(pred, columns=self.channel_names)
         df_pred.insert(0, "timestamp", timestamps)
 
-        return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, df_pred, inference_time
+        df_energy = pd.DataFrame(attens_energy, columns=self.channel_names)
+        df_energy.insert(0, "timestamp", timestamps)
 
-    def test_low_mem(self):
+        inference_time = time.time() - start_time
+        print("Inference Time:", inference_time)
 
-      self.model.load_state_dict(
-          torch.load(
-              os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth'),
-              map_location=self.device
-          )
-      )
-      self.model.eval()
-      temperature = 50
+        return (
+            accuracy, precision, recall, f_score,
+            esa_results, channel_results, adtqc,
+            thresh, df_energy, df_pred, inference_time
+        )
 
-      print("======================TEST MODE (LOW MEMORY)======================")
+    def test_one_thresh_low_mem(self):
 
-      criterion = nn.MSELoss(reduction='none')
-      start_time = time.time()
+        self.model.load_state_dict(
+            torch.load(
+                os.path.join(str(self.model_save_path), str(self.dataset) + '_checkpoint.pth'),
+                map_location=self.device
+            )
+        )
+        self.model.eval()
+        temperature = self.temperature
+        print("======================TEST MODE (LOW MEMORY, GLOBAL THRESH)======================")
 
-      def compute_assoc_loss(series, prior):
-          series_loss = 0.0
-          prior_loss = 0.0
+        start_time = time.time()
+        criterion = nn.MSELoss(reduction="none")
 
-          for u in range(len(prior)):
-              norm_prior = prior[u] / torch.sum(prior[u], dim=-1, keepdim=True)
-              norm_prior = norm_prior.expand(-1, -1, -1, self.win_size)
+        def compute_assoc_loss(series, prior):
+            series_loss = 0.0
+            prior_loss = 0.0
+            for u in range(len(prior)):
+                norm_prior = prior[u] / torch.sum(prior[u], dim=-1, keepdim=True)
+                norm_prior = norm_prior.expand(-1, -1, -1, self.win_size)
+                series_loss += my_kl_loss(series[u], norm_prior.detach()) * temperature
+                prior_loss += my_kl_loss(norm_prior, series[u].detach()) * temperature
+            return series_loss, prior_loss
 
-              series_loss += my_kl_loss(series[u], norm_prior.detach()) * temperature
-              prior_loss += my_kl_loss(norm_prior, series[u].detach()) * temperature
+        # ==========================================================
+        # (1) TRAIN ENERGY — STREAMING (SCALAR ENERGY)
+        # ==========================================================
+        timeline_len = len(self.train_loader.dataset.train)
+        train_energy_sum = np.zeros(timeline_len, dtype=np.float32)
+        train_energy_count = np.zeros(timeline_len, dtype=np.int32)
 
-          return series_loss, prior_loss
+        with torch.no_grad():
+            for input_data, _, start_indices in self.train_loader:
+                input = input_data.float().to(self.device)
 
-      # ===================== (1) TRAIN ENERGY =====================
-      train_energy = []
+                output, series, prior, _ = self.model(input)
+                loss = torch.mean(criterion(input, output), dim=-1)  # (B, W)
 
-      with torch.no_grad():
-          for i, (input_data, _) in enumerate(self.train_loader):
-              input = input_data.float().to(self.device)
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1)  # (B, W)
 
-              output, series, prior, _ = self.model(input)
-              loss = criterion(input, output)
+                cri = (metric * loss).cpu().numpy()  # (B, W)
 
-              series_loss, prior_loss = compute_assoc_loss(series, prior)
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    start = int(start)
+                    end = min(start + self.win_size, timeline_len)
+                    valid_len = end - start
+                    if valid_len <= 0:
+                        continue
 
-              metric = torch.softmax(-(series_loss + prior_loss), dim=-1)
-              metric = metric.unsqueeze(-1)
+                    train_energy_sum[start:end] += cri[b][:valid_len]
+                    train_energy_count[start:end] += 1
 
-              cri = (metric * loss).cpu().numpy()
-              train_energy.append(cri)
+                del input, output, series, prior, loss, metric, cri
 
-              del input, output, series, prior, loss, metric, cri
+        train_energy = train_energy_sum / np.maximum(train_energy_count, 1)
 
-      train_energy = np.concatenate(train_energy, axis=0)
+        del train_energy_sum, train_energy_count
+        del self.train_loader
+        gc.collect()
+        torch.cuda.empty_cache()
 
-         
-      del self.train_loader
-      gc.collect()
-      torch.cuda.empty_cache()
+        # ==========================================================
+        # (1) Test ENERGY — ONLINE RECONSTRUCTION
+        # ==========================================================
+        dataset_len = len(self.thre_loader.dataset.test)
+        thre_energy_sum = np.zeros((dataset_len, self.output_c), dtype=np.float32)
+        thre_energy_count = np.zeros((dataset_len, 1), dtype=np.int32)
 
-      # ===================== (2) THRESHOLD =====================
-      test_energy_tmp = []
+        with torch.no_grad():
+            for input_data, _, start_indices in self.thre_loader:
+                input = input_data.float().to(self.device)
 
-      with torch.no_grad():
-          for input_data, _ in self.thre_loader:
-              input = input_data.float().to(self.device)
+                output, series, prior, _ = self.model(input)
+                loss = criterion(input, output)
 
-              output, series, prior, _ = self.model(input)
-              loss = criterion(input, output)
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1).unsqueeze(-1)
 
-              series_loss, prior_loss = compute_assoc_loss(series, prior)
+                cri = (metric * loss).cpu().numpy()  # (B, W, C)
 
-              metric = torch.softmax(-(series_loss + prior_loss), dim=-1)
-              metric = metric.unsqueeze(-1)
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    end = start + self.win_size
+                    thre_energy_sum[start:end] += cri[b]
+                    thre_energy_count[start:end] += 1
 
-              cri = (metric * loss).cpu().numpy()
-              test_energy_tmp.append(cri)
+                del input, output, series, prior, loss, metric, cri
 
-              del input, output, series, prior, loss, metric, cri
+        thre_energy = thre_energy_sum / np.maximum(thre_energy_count, 1)
 
-      test_energy_tmp = np.concatenate(test_energy_tmp, axis=0)
+        del thre_energy_sum, thre_energy_count
+        del self.thre_loader
+        gc.collect()
+        torch.cuda.empty_cache()
 
-      combined_energy = np.concatenate([train_energy, test_energy_tmp], axis=0)
-      thresh = np.percentile(combined_energy, 100 - self.anormly_ratio, axis=(0, 1))
+        # ==========================================================
+        # (2) THRESHOLD
+        # ==========================================================
+        combined_energy = np.concatenate([train_energy, thre_energy], axis=0)
+        thresh = np.percentile(
+            combined_energy,
+            100 - self.anormly_ratio
+        )
+        print("Per channel thresholds:", thresh)
 
-      print("Per channel thresholds:", thresh)
+        # ==========================================================
+        # (2) THRESHOLD (GLOBAL)
+        # ==========================================================
+        # original logic: percentile over train (+ thre/test)
+        # here we keep TRAIN-ONLY unless you explicitly want leakage
+        #thresh = np.percentile(train_energy, 100 - self.anormly_ratio)
+        #print("Threshold :", thresh)
 
-      del self.thre_loader
-      gc.collect()
-      torch.cuda.empty_cache()
+        # ==========================================================
+        # (3) TEST ENERGY — STREAMING
+        # ==========================================================
+        dataset_len = len(self.test_loader.dataset.test)
+        test_energy_sum = np.zeros((dataset_len, self.output_c), dtype=np.float32)
+        test_energy_count = np.zeros((dataset_len, 1), dtype=np.int32)
 
-      # ===================== (3) TEST SET =====================
-      attens_energy = []
-      test_labels = []
+        test_labels_full = self.test_loader.dataset.test_labels
 
-      with torch.no_grad():
-          for input_data, labels in self.test_loader:
-              input = input_data.float().to(self.device)
+        with torch.no_grad():
+            for input_data, _, start_indices in self.test_loader:
+                input = input_data.float().to(self.device)
 
-              output, series, prior, _ = self.model(input)
-              loss = criterion(input, output)
+                output, series, prior, _ = self.model(input)
+                loss = criterion(input, output)
 
-              series_loss, prior_loss = compute_assoc_loss(series, prior)
+                series_loss, prior_loss = compute_assoc_loss(series, prior)
+                metric = torch.softmax(-(series_loss + prior_loss), dim=-1).unsqueeze(-1)
 
-              metric = torch.softmax(-(series_loss + prior_loss), dim=-1)
-              metric = metric.unsqueeze(-1)
+                cri = (metric * loss).cpu().numpy()
 
-              cri = (metric * loss).cpu().numpy()
+                starts = start_indices.numpy()
+                for b, start in enumerate(starts):
+                    end = start + self.win_size
+                    test_energy_sum[start:end] += cri[b]
+                    test_energy_count[start:end] += 1
 
-              attens_energy.append(cri)
-              test_labels.append(labels)
+                del input, output, series, prior, loss, metric, cri
 
-              del input, output, series, prior, loss, metric, cri
+        attens_energy = test_energy_sum / np.maximum(test_energy_count, 1)
 
+        del test_energy_sum, test_energy_count
+        gc.collect()
+        torch.cuda.empty_cache()
 
-      attens_energy = np.concatenate(attens_energy, axis=0).reshape(-1, self.output_c)
-      test_labels = np.concatenate(test_labels, axis=0).reshape(-1, self.output_c)
+        # ==========================================================
+        # (4) PREDICTION + METRICS
+        # ==========================================================
+        pred = (attens_energy > thresh).astype(int)
+        gt = (test_labels_full == 1).astype(int)
 
-      pred = (attens_energy > thresh[None, :]).astype(int)
-      gt = (test_labels == 2).astype(int)
+        from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 
-      end_time = time.time()
-      inference_time = end_time - start_time
+        gt_any = gt.any(axis=1)
+        pred_any = pred.any(axis=1)
 
-      print("Inference Time:", inference_time)
+        accuracy = accuracy_score(gt_any, pred_any)
+        precision, recall, f_score, _ = precision_recall_fscore_support(
+            gt_any, pred_any, average='binary'
+        )
 
-      from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+        print(
+            "Accuracy : {:.4f}, Precision : {:.4f}, Recall : {:.4f}, F-score : {:.4f}".format(
+                accuracy, precision, recall, f_score
+            )
+        )
 
-      gt_any = gt.any(axis=1)
-      pred_any = pred.any(axis=1)
+        # ==========================================================
+        # (5) ADJUSTMENT (ESA PROTOCOL)
+        # ==========================================================
+        anomaly_state = False
+        for i in range(len(gt_any)):
+            if gt_any[i] == 1 and pred_any[i] == 1 and not anomaly_state:
+                anomaly_state = True
+                for j in range(i, 0, -1):
+                    if gt_any[j] == 0:
+                        break
+                    if pred_any[j] == 0:
+                        pred_any[j] = 1
+                for j in range(i, len(gt_any)):
+                    if gt_any[j] == 0:
+                        break
+                    if pred_any[j] == 0:
+                        pred_any[j] = 1
+            elif gt_any[i] == 0:
+                anomaly_state = False
+            if anomaly_state:
+                pred_any[i] = 1
 
-      accuracy = accuracy_score(gt_any, pred_any)
-      precision, recall, f_score, _ = precision_recall_fscore_support(
-          gt_any, pred_any, average='binary'
-      )
+        adj_accuracy = accuracy_score(gt, pred)
+        adj_precision, adj_recall, adj_f_score, _ = precision_recall_fscore_support(
+            gt_any, pred_any, average="binary"
+        )
 
-      print(
-          "Accuracy : {:.4f}, Precision : {:.4f}, Recall : {:.4f}, F-score : {:.4f}".format(
-              accuracy, precision, recall, f_score
-          )
-      )
+        print("Adjusted scores")
+        print(
+            "Accuracy : {:.4f}, Precision : {:.4f}, Recall : {:.4f}, F-score : {:.4f}".format(
+                adj_accuracy, adj_precision, adj_recall, adj_f_score
+            )
+        )
 
-      esa_results, channel_results, adtqc = self._compute_esa_metrics(
-          predictions=pred,
-          ground_truth=gt,
-          anomaly_scores=attens_energy
-      )
+        # ==========================================================
+        # (6) ESA METRICS + OUTPUTS
+        # ==========================================================
+        esa_results, channel_results, adtqc = self._compute_esa_metrics(
+            predictions=pred,
+            ground_truth=test_labels_full,
+            anomaly_scores=attens_energy
+        )
 
-      timestamps = self.test_loader.dataset.get_timestamps().reset_index(drop=True)
+        timestamps = self.test_loader.dataset.get_timestamps().reset_index(drop=True)
 
-      df_pred = pd.DataFrame(pred, columns=self.channel_names)
-      df_pred.insert(0, "timestamp", timestamps)
+        df_pred = pd.DataFrame(pred, columns=self.channel_names)
+        df_pred.insert(0, "timestamp", timestamps)
 
-      return accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, df_pred, inference_time
+        df_energy = pd.DataFrame(attens_energy, columns=self.channel_names)
+        df_energy.insert(0, "timestamp", timestamps)
 
+        inference_time = time.time() - start_time
+        print("Inference Time:", inference_time)
+
+        return (
+            accuracy, precision, recall, f_score,
+            esa_results, channel_results, adtqc,
+            thresh, df_energy, df_pred, inference_time
+        )
