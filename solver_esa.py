@@ -106,6 +106,7 @@ class Solver(object):
                                                 dataset=self.dataset)
 
           # Load labels
+          self.labels_csv_path = os.path.join(self.data_path, 'labels.csv')
           self.labels_parser = ESALabelsParser(self.labels_csv_path)
 
 

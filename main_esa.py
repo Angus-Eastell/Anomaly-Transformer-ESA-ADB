@@ -160,7 +160,6 @@ if __name__ == '__main__':
     parser.add_argument('--e_layers', type=int, default=3)
     parser.add_argument('--beta', type=float, default=0.5)
     parser.add_argument('--step', type =  int, default = 100)
-    parser.add_argument('--labels_csv_path', type=str, default= './dataset/ESA/labels.csv')
     parser.add_argument('--mission', type= str, choices = ['mission_1','mission_2'])
 
 
