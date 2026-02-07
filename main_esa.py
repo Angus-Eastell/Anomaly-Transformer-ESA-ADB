@@ -85,19 +85,27 @@ def main(config):
 
         accuracy, precision, recall, f_score, esa_results, channel_results, adtqc, thresh, pred_energy, pred_df, inference_time = solver.test_low_mem_overlapping_new()
 
+        
+        if config.mission == 'mission_1':
+          target_channels = ['channel_41', 'channel_42', 'channel_43', 'channel_44', 'channel_45', 'channel_46']
+
+        elif config.mission == 'mission_2':
+          target_channels = ['channel_18', 'channel_19', 'channel_20', 'channel_21', 'channel_22', 'channel_23', 'channel_24', 'channel_25', 'channel_26', 'channel_27', 'channel_28']
+  
+
         # Guard against global vs per-channel threshold
         if np.isscalar(thresh) or len(np.atleast_1d(thresh)) == 1:
             # Global threshold → apply to all channels
             channel_thresholds = {
-                ch: float(thresh) for ch in config.target_channels
+                ch: float(thresh) for ch in target_channels
             }
         else:
             # Per-channel thresholds
-            assert len(thresh) == len(config.target_channels), (
+            assert len(thresh) == len(target_channels), (
                 f"Threshold length {len(thresh)} does not match "
-                f"number of channels {len(config.target_channels)}"
+                f"number of channels {len(target_channels)}"
             )
-            channel_thresholds = dict(zip(config.target_channels, thresh))
+            channel_thresholds = dict(zip(target_channels, thresh))
 
         print('Writing Results')
 
