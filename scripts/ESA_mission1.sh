@@ -1,6 +1,6 @@
 export CUDA_VISIBLE_DEVICES=0
 
-#python main_esa.py --num_epochs 20   --batch_size 64  --mode train --dataset 84_months  --data_path dataset/ESA_mission1 --train_length 84_months --test_length 84_months --input_c 6 --output_c 6 --step 25 --win_size 100 --run_name final_final
+#python main_esa.py --mission mission_1 --num_epochs 20   --batch_size 64  --mode train --dataset 84_months  --data_path dataset/ESA_mission1 --train_length 84_months --test_length 84_months --input_c 6 --output_c 6 --step 25 --win_size 100 --run_name final_final
 #python main_esa.py --anormly_ratio 0.25  --batch_size 64     --mode test    --dataset 84_months   --data_path dataset/ESA_mission1 --train_length 84_months --test_length 84_months --input_c 6 --output_c 6 --step 1 --win_size 100 --run_name final_low_temp_point_twofive --temperature 5 --n_heads 4 --d_model 256
-python main_esa.py --anormly_ratio 1  --batch_size 64     --mode test    --dataset 84_months   --data_path dataset/ESA_mission1 --train_length 84_months --test_length 84_months --input_c 6 --output_c 6 --step 1 --win_size 100 --run_name final_final_one --temperature 50 
+python main_esa.py --mission mission_1 --anormly_ratio 0.11  --batch_size 64     --mode test    --dataset 84_months   --data_path dataset/ESA_mission1 --train_length 84_months --test_length 84_months --input_c 6 --output_c 6 --step 1 --win_size 100 --run_name final_final_one --temperature 50 
 #python main_esa.py --anormly_ratio 0.1  --batch_size 64     --mode thresh_analysis    --dataset 84_months   --data_path dataset/ESA_mission1 --train_length 84_months --test_length 84_months --input_c 6 --output_c 6 --step 1 --win_size 100 --run_name thresh --pretrained_model 20 --temperature 50 --n_heads 4 --d_model 256
