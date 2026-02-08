@@ -167,6 +167,7 @@ class Solver(object):
     def train(self):
 
         print("======================TRAIN MODE======================")
+        total_time_start = time.time()
 
         time_now = time.time()
         path = self.model_save_path
@@ -254,6 +255,14 @@ class Solver(object):
             if early_stopping.counter >= 3 and self.epoch_count >= 2:
               adjust_learning_rate(self.optimizer, epoch + 1, self.lr)
               self.epoch_count = 0
+                
+        total_time_end= time.time()
+
+        total_train_time = total_time_end - total_train_start 
+
+        print('Total training time', total_train_start)
+
+    
 
     def _compute_esa_metrics(self, predictions, ground_truth, anomaly_scores):
         """
