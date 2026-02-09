@@ -3,6 +3,7 @@
 Git for anomaly transformer with adapations for ESA dataset.
 
 To run model:
+- follow intinal setup as shown by original author
 - copy preprocessed datasets into data folder in subset folder called ESA_mission1 or ESA_mission2 based on the mission chosen
 - run the bash file to run training and testing 
 ``` bash
